@@ -1,4 +1,5 @@
 #include <stdlib.h>
+#include <time.h>
 #include "error_messages.h"
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -53,65 +54,94 @@ void save_frame(struct Frame frame, int i) {
 }
 
 int main() {
+    struct timespec start_time, end_time;
+
     printf("Extracting frames...\n");
+    clock_gettime(CLOCK_REALTIME, &start_time);
     system("mkdir -p input output");
     system("rm -f input/* output/*");
     system("ffmpeg -i demos/loco_departure.mov -vf scale=\"iw/4:ih/4\" input/%04d.png -v quiet -stats"); // Downsample 4x for performance
+    clock_gettime(CLOCK_REALTIME, &end_time);
+    double extraction_time = (end_time.tv_sec - start_time.tv_sec) + ((end_time.tv_nsec - start_time.tv_nsec)/1e9);
 
-    struct Frame base_frame = get_frame(1);
+    int frame_count = 0;
+    while (frame_exists(frame_count+1)) frame_count++;
+    printf("Input is %d frames\n", frame_count);
 
-    struct Frame output_frame = base_frame;
-    output_frame.n = 3;
-    int frame_size = base_frame.w * base_frame.h; 
-    output_frame.data = calloc(frame_size, output_frame.n);
+    // Load all input frames and allocate blank output frames
+    printf("Loading input frames...\n");
+    clock_t load_clock = clock();
+    clock_gettime(CLOCK_REALTIME, &start_time);
+    struct Frame* in_frames = calloc(frame_count, sizeof(struct Frame));
+    struct Frame* out_frames = calloc(frame_count, sizeof(struct Frame));
+    in_frames[0] = get_frame(1);
+    int pixel_count = in_frames[0].w * in_frames[0].h;
+    #pragma omp parallel for
+    for (int i = 0; i < frame_count; i++) {
+        in_frames[i] = get_frame(i+1);
+        out_frames[i] = (struct Frame){in_frames[i].i, in_frames[0].w, in_frames[0].h, 3, NULL};
+        out_frames[i].data = calloc(pixel_count, out_frames[i].n);
+    }
+    clock_gettime(CLOCK_REALTIME, &end_time);
+    double load_time = (end_time.tv_sec - start_time.tv_sec) + ((end_time.tv_nsec - start_time.tv_nsec)/1e9);
+    
+    // Process frames
+    printf("Processing frames...\n");
+    clock_gettime(CLOCK_REALTIME, &start_time);
+    #pragma omp parallel for
+    for (int i = 0; i < (frame_count-1); i++) {
+        printf("Processing frame %d\n", i);
+        for (int j = 0; j < pixel_count; j++) {
+            int pixel_old = in_frames[i].data[j]; // Cast to signed int for comparison
+            int pixel_new = in_frames[i+1].data[j];
 
-    int frame_number = 1;
-    while (frame_exists(frame_number+1)) {
-        struct Frame next_frame = get_frame(frame_number+1);
+            out_frames[i].data[(j*3)+0] = 0;
+            out_frames[i].data[(j*3)+1] = 0;
+            out_frames[i].data[(j*3)+2] = 0;
 
-        for (int i = 0; i < frame_size; i++) {
-            int pixel_old = base_frame.data[i]; // Cast to signed int for comparison
-            int pixel_new = next_frame.data[i];
-            
             // If luminance changed then set pixel
-            // if ((pixel_new - pixel_old) > threshold) output_frame.data[i] = 255; // Brighter
-            // else if ((pixel_old - pixel_new) > threshold) output_frame.data[i] = 0; // Darker
-            // else output_frame.data[i] = 127;
-
-            output_frame.data[(i*3)+0] = 0;
-            output_frame.data[(i*3)+1] = 0;
-            output_frame.data[(i*3)+2] = 0;
-            if ((pixel_new - pixel_old) > threshold) output_frame.data[(i*3)+1] = 255; // Brighter
-            else if ((pixel_old - pixel_new) > threshold) output_frame.data[(i*3)+0] = 255; // Darker
+            if ((pixel_new - pixel_old) > threshold) out_frames[i].data[(j*3)+1] = 255; // Brighter
+            else if ((pixel_old - pixel_new) > threshold) out_frames[i].data[(j*3)+0] = 255; // Darker
             else {
-                output_frame.data[(i*3)+0] = pixel_old/2;
-                output_frame.data[(i*3)+1] = pixel_old/2;
-                output_frame.data[(i*3)+2] = pixel_old/2;
+                out_frames[i].data[(j*3)+0] = pixel_old/2;
+                out_frames[i].data[(j*3)+1] = pixel_old/2;
+                out_frames[i].data[(j*3)+2] = pixel_old/2;
             }
         }
-
-        save_frame(output_frame, frame_number);
-
-        free_frame(base_frame);
-        base_frame = next_frame;
-
-        frame_number += 1;
     }
+    clock_gettime(CLOCK_REALTIME, &end_time);
+    double process_time = (end_time.tv_sec - start_time.tv_sec) + ((end_time.tv_nsec - start_time.tv_nsec)/1e9);
 
-    // Output last frame again so input and output have same frame total
-    save_frame(output_frame, frame_number);
+    // Free frames and save output
+    printf("Saving output frames...\n");
+    clock_gettime(CLOCK_REALTIME, &start_time);
+    #pragma omp parallel for
+    for (int i = 0; i < frame_count; i++) {
+        save_frame(out_frames[i], i+1);
+        free_frame(in_frames[i]);
+        free_frame(out_frames[i]);
+    }
+    clock_gettime(CLOCK_REALTIME, &end_time);
+    double save_time = (end_time.tv_sec - start_time.tv_sec) + ((end_time.tv_nsec - start_time.tv_nsec)/1e9);
 
-    free_frame(base_frame);
-    free_frame(output_frame);
+    
 
     printf("Generating video...\n");
-    system("rm output_*.mp4");
+    clock_gettime(CLOCK_REALTIME, &start_time);
+    system("rm -f output_*.mp4");
     system("ffmpeg -i output/%04d.png -c:v libx264 output_1.mp4 -v quiet -stats");
     system("ffmpeg -i input/%04d.png -i output/%04d.png -filter_complex hstack -c:v libx264 output_2.mp4 -v quiet -stats");
-    // system("ffmpeg -i input/%04d.png -i output/%04d.png -filter_complex vstack -c:v libx264 output_2.mp4 -v quiet -stats");
+    system("ffmpeg -i input/%04d.png -i output/%04d.png -filter_complex vstack -c:v libx264 output_3.mp4 -v quiet -stats");
     // system("rm -r input output");
+    clock_gettime(CLOCK_REALTIME, &end_time);
+    double generation_time = (end_time.tv_sec - start_time.tv_sec) + ((end_time.tv_nsec - start_time.tv_nsec)/1e9);
 
-    // ffmpeg -i demos/loco_bottle.mov -i output/%04d.png -filter_complex hstack output_3.mp4 -vsync 2
+    printf("--- DONE ---\n");
+    printf("Extraction took %.2f seconds\n", extraction_time);
+    printf("Loading took %.2f seconds, %.1f FPS\n", load_time, frame_count/load_time);
+    printf("Processing took %.2f seconds, %.1f FPS\n", process_time, frame_count/process_time);
+    printf("Saving took %.2f seconds, %.1f FPS\n", save_time, frame_count/save_time);
+    printf("Generation took %.2f seconds\n", generation_time);
 
     return 0;
 }

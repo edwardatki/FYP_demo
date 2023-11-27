@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := main.bin
 
 CC=gcc
-CFLAGS=-lm
+CFLAGS=-lm -fopenmp
 
 clean:
 	rm -f *.out *.bin
