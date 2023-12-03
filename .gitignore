@@ -57,3 +57,4 @@ dkms.conf
 input/
 output/
 output_*.mp4
+*.txt

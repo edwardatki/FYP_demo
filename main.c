@@ -87,22 +87,33 @@ int main() {
     
     // Process frames
     printf("Processing frames...\n");
+    FILE* event_file = fopen("events.txt", "w");
     clock_gettime(CLOCK_REALTIME, &start_time);
-    #pragma omp parallel for
     for (int i = 0; i < (frame_count-1); i++) {
         printf("Processing frame %d\n", i);
+        // #pragma omp parallel for
         for (int j = 0; j < pixel_count; j++) {
             int pixel_old = in_frames[i].data[j]; // Cast to signed int for comparison
             int pixel_new = in_frames[i+1].data[j];
 
-            out_frames[i].data[(j*3)+0] = 0;
-            out_frames[i].data[(j*3)+1] = 0;
-            out_frames[i].data[(j*3)+2] = 0;
+            // out_frames[i].data[(j*3)+0] = 0;
+            // out_frames[i].data[(j*3)+1] = 0;
+            // out_frames[i].data[(j*3)+2] = 0;
 
             // If luminance changed then set pixel
-            if ((pixel_new - pixel_old) > threshold) out_frames[i].data[(j*3)+1] = 255; // Brighter
-            else if ((pixel_old - pixel_new) > threshold) out_frames[i].data[(j*3)+0] = 255; // Darker
-            else {
+            if ((pixel_new - pixel_old) > threshold){
+                out_frames[i].data[(j*3)+1] = 255; // Brighter
+
+                int x = j % in_frames[i].w;
+                int y = j / in_frames[i].w;
+                fprintf(event_file, "FRAME %d, %d, %d, %d\n", i, x, y, 1);
+            } else if ((pixel_old - pixel_new) > threshold) {
+                out_frames[i].data[(j*3)+0] = 255; // Darker
+
+                int x = j % in_frames[0].w;
+                int y = j / in_frames[0].w;
+                fprintf(event_file, "FRAME %d, %d, %d, %d\n", i, x, y, -1);
+            } else {
                 out_frames[i].data[(j*3)+0] = pixel_old/2;
                 out_frames[i].data[(j*3)+1] = pixel_old/2;
                 out_frames[i].data[(j*3)+2] = pixel_old/2;
@@ -111,6 +122,7 @@ int main() {
     }
     clock_gettime(CLOCK_REALTIME, &end_time);
     double process_time = (end_time.tv_sec - start_time.tv_sec) + ((end_time.tv_nsec - start_time.tv_nsec)/1e9);
+    fclose(event_file);
 
     // Free frames and save output
     printf("Saving output frames...\n");
